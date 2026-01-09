@@ -1,0 +1,86 @@
+name: CD
+
+on:
+  push:
+    branches: [ main ]
+    tags:
+      - "v*.*.*"
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set image tag
+        id: vars
+        run: |
+          TAG=${GITHUB_SHA::7}
+          echo "TAG=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Build and push backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.repository }}-backend:${{ steps.vars.outputs.TAG }}
+            ${{ env.REGISTRY }}/${{ github.repository }}-backend:latest
+
+      - name: Build and push frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.repository }}-frontend:${{ steps.vars.outputs.TAG }}
+            ${{ env.REGISTRY }}/${{ github.repository }}-frontend:latest
+
+      - name: Set up kubeconfig
+        env:
+          KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG }}
+        run: |
+          mkdir -p $HOME/.kube
+          echo "$KUBE_CONFIG_DATA" | base64 -d > $HOME/.kube/config
+
+      - name: Create/Update app secrets in cluster
+        env:
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+        run: |
+          kubectl -n webapp-prod create secret generic webapp-secrets \
+            --from-literal=DB_USER="$DB_USER" \
+            --from-literal=DB_PASSWORD="$DB_PASSWORD" \
+            --from-literal=DATABASE_URL="$DATABASE_URL" \
+            --from-literal=JWT_SECRET="$JWT_SECRET" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Apply Kubernetes manifests
+        run: |
+          kubectl apply -f k8s/namespace.yaml
+          kubectl apply -n webapp-prod -f k8s/configmap.yaml
+          kubectl apply -n webapp-prod -f k8s/db-statefulset.yaml
+          kubectl apply -n webapp-prod -f k8s/backend-deployment.yaml
+          kubectl apply -n webapp-prod -f k8s/frontend-deployment.yaml
+          kubectl apply -n webapp-prod -f k8s/ingress.yaml

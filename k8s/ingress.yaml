@@ -1,0 +1,27 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: webapp-ingress
+  namespace: webapp-prod
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /$1
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: bmi-web.local # replace with your real domain or host
+      http:
+        paths:
+          - path: /(.*)
+            pathType: Prefix
+            backend:
+              service:
+                name: webapp-frontend
+                port:
+                  number: 80
+          - path: /api(/|$)(.*)
+            pathType: Prefix
+            backend:
+              service:
+                name: webapp-backend
+                port:
+                  number: 3000
